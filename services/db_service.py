@@ -33,7 +33,7 @@ class DBService:
             # Take last 30 for history
             for b in db_backups[:30]:
                 status = b.get("status", "failed")
-                config["status_history"].append("success" if status in ["completed", "success"] else "failed")
+                config["status_history"].append("success" if status in ["completed", "success", "completed_local_only"] else "failed")
                 config["total_storage"] += b.get("size", 0)
                 config["total_backups"] += 1
             
@@ -72,7 +72,7 @@ class DBService:
         # Last 30 for history
         for b in backups[:30]:
             status = b.get("status", "failed")
-            status_history.append("success" if status in ["completed", "success"] else "failed")
+            status_history.append("success" if status in ["completed", "success", "completed_local_only"] else "failed")
         
         status_history.reverse()
 

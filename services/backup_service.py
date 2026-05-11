@@ -38,8 +38,8 @@ class BackupService:
             
         # Generate backup filename
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        db_name = db_config.get("db_name", "unknown")
-        filename = f"{db_name}_{timestamp}.{extension}"
+        target_db = db_config.get("db_name") or db_config.get("database") or "unknown"
+        filename = f"{target_db}_{timestamp}.{extension}"
         filepath = os.path.join(self.backup_storage_path, filename)
         
         # Prepare environment (mostly for PGPASSWORD)
@@ -65,7 +65,7 @@ class BackupService:
                     f"--port={db_config.get('port', 3306)}",
                     f"--user={db_config.get('username')}",
                     f"--password={db_config.get('password')}",
-                    db_config.get('db_name')
+                    db_config.get('db_name') or db_config.get('database')
                 ]
             elif db_type in ["postgres", "postgresql"]:
                 tool_name = "pg_dump"
@@ -84,7 +84,7 @@ class BackupService:
                         f"--host={clean_host}",
                         f"--port={db_config.get('port', 5432)}",
                         f"--username={db_config.get('username')}",
-                        f"--dbname={db_config.get('db_name')}",
+                        f"--dbname={db_config.get('db_name') or db_config.get('database')}",
                         "-f", filepath
                     ]
                     env["PGPASSWORD"] = db_config.get('password')
@@ -111,7 +111,8 @@ class BackupService:
                     
                     # Default authSource to admin if not specified (common for MongoDB)
                     auth_source = db_config.get("auth_source") or "admin"
-                    uri = f"mongodb://{auth_part}{clean_host}:{db_config.get('port', 27017)}/{db_config.get('db_name')}?authSource={auth_source}"
+                    db_name = db_config.get('db_name') or db_config.get('database') or "test"
+                    uri = f"mongodb://{auth_part}{clean_host}:{db_config.get('port', 27017)}/{db_name}?authSource={auth_source}"
                     
                     # Log URI for debugging (mask password)
                     masked_uri = uri.replace(password, "********") if 'password' in locals() else uri
