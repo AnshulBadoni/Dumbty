@@ -158,9 +158,20 @@ class BackupService:
             try:
                 if use_stdout:
                     with open(filepath, 'w') as f:
-                        subprocess.run(dump_command, env=env, stdout=f, check=True)
+                        process = subprocess.run(dump_command, env=env, stdout=f, stderr=subprocess.PIPE, text=True, check=True)
+                        if process.stderr:
+                            print(f"Backup Tool Output (stderr): {process.stderr}")
                 else:
-                    subprocess.run(dump_command, env=env, check=True)
+                    process = subprocess.run(dump_command, env=env, capture_output=True, text=True, check=True)
+                    print(f"Backup Tool Output (stdout): {process.stdout}")
+                    if process.stderr:
+                        print(f"Backup Tool Output (stderr): {process.stderr}")
+            except subprocess.CalledProcessError as e:
+                print(f"Backup Tool Failed. Error Output: {e.stderr}")
+                return {
+                    "status": "failed", 
+                    "error": f"Backup tool failed: {e.stderr or str(e)}"
+                }
             except FileNotFoundError:
                 return {
                     "status": "failed", 
