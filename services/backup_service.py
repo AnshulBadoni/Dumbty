@@ -91,6 +91,7 @@ class BackupService:
                 use_stdout = False
             elif db_type == "mongodb":
                 tool_name = "mongodump"
+                from urllib.parse import quote_plus
                 
                 # Priority 1: Use full connection string if available (critical for Atlas/SRV)
                 if db_config.get("connection_string"):
@@ -104,11 +105,17 @@ class BackupService:
                     # Construct URI from parts
                     auth_part = ""
                     if db_config.get("username") and db_config.get("password"):
-                        auth_part = f"{db_config['username']}:{db_config['password']}@"
+                        username = quote_plus(db_config['username'])
+                        password = quote_plus(db_config['password'])
+                        auth_part = f"{username}:{password}@"
                     
                     # Default authSource to admin if not specified (common for MongoDB)
                     auth_source = db_config.get("auth_source") or "admin"
                     uri = f"mongodb://{auth_part}{clean_host}:{db_config.get('port', 27017)}/{db_config.get('db_name')}?authSource={auth_source}"
+                    
+                    # Log URI for debugging (mask password)
+                    masked_uri = uri.replace(password, "********") if 'password' in locals() else uri
+                    print(f"Connecting to MongoDB at: {masked_uri}")
                     
                     dump_command = [
                         tool_name,
