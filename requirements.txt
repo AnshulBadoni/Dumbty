@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+python-jose
+pymongo
+python-dotenv
+bcrypt
+APScheduler
+email-validator
+boto3
+httpx
