@@ -154,6 +154,15 @@ class BackupService:
                             dump_command[0] = path
                             break
 
+            # Log the exact command (mask password in URI if present)
+            masked_cmd = []
+            for arg in dump_command:
+                if "--uri=" in arg and 'password' in locals():
+                    masked_cmd.append(arg.replace(password, "********"))
+                else:
+                    masked_cmd.append(arg)
+            print(f"Executing Command: {' '.join(masked_cmd)}")
+
             # Execute command
             try:
                 if use_stdout:
