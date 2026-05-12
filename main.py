@@ -39,3 +39,7 @@ app.include_router(settings_router)
 @app.get("/")
 def read_root():
     return {"Hello": "World"}
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "version": "1.0.0"}
