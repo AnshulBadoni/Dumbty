@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from bson import ObjectId
 import subprocess
 import os
+import asyncio
 from typing import List, Dict
 
 class BackupService:
@@ -38,7 +39,7 @@ class BackupService:
             
         # Generate backup filename
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        target_db = db_config.get("db_name") or db_config.get("database") or "unknown"
+        target_db = db_config.get("database") or db_config.get("db_name") or "all_databases"
         filename = f"{target_db}_{timestamp}.{extension}"
         filepath = os.path.join(self.backup_storage_path, filename)
         
@@ -51,7 +52,12 @@ class BackupService:
             
             # Helper to get host without protocol
             raw_host = db_config.get('host', 'localhost')
-            clean_host = raw_host.replace('mongodb://', '').replace('postgresql://', '').replace('postgres://', '').split('/')[0]
+            clean_host = raw_host
+            if '://' in raw_host:
+                clean_host = raw_host.split('://')[1].split('/')[0]
+            elif '/' in raw_host:
+                clean_host = raw_host.split('/')[0]
+                
             if '@' in clean_host:
                 clean_host = clean_host.split('@')[1]
 
@@ -111,11 +117,26 @@ class BackupService:
                     
                     # Default authSource to admin if not specified (common for MongoDB)
                     auth_source = db_config.get("auth_source") or "admin"
-                    db_name = db_config.get('db_name') or db_config.get('database') or "test"
-                    uri = f"mongodb://{auth_part}{clean_host}:{db_config.get('port', 27017)}/{db_name}?authSource={auth_source}"
+                    
+                    # Prioritize 'database' field for the actual target, fall back to 'db_name'
+                    db_name = db_config.get('database') or db_config.get('db_name')
+                    
+                    # Construct options
+                    options = [f"authSource={auth_source}"]
+                    is_ssl = db_config.get("ssl") or db_config.get("tls")
+                    if is_ssl:
+                        options.append("tls=true")
+                        # Also try adding it to the URI itself
+                        options.append("tlsInsecure=true")
+                        
+                    options_str = "&".join(options)
+                    
+                    # Construct the base URI without the database path for better compatibility
+                    uri = f"mongodb://{auth_part}{clean_host}:{db_config.get('port', 27017)}/?{options_str}"
                     
                     # Log URI for debugging (mask password)
                     masked_uri = uri.replace(password, "********") if 'password' in locals() else uri
+                    print(f"DEBUG: SSL Detected: {is_ssl}")
                     print(f"Connecting to MongoDB at: {masked_uri}")
                     
                     dump_command = [
@@ -124,6 +145,23 @@ class BackupService:
                         f"--archive={filepath}",
                         "--gzip"
                     ]
+                    
+                    # Add insecure flags if SSL is enabled to handle self-signed certificates
+                    if is_ssl:
+                        # Try both modern and legacy flags
+                        dump_command.append("--tlsInsecure")
+                        # Note: We don't add both at once to avoid conflicts, 
+                        # but we ensure the URI has it too.
+                    
+                    # If db_name is provided, target it explicitly
+                    if db_name:
+                        dump_command.append(f"--db={db_name}")
+                    
+                    # Support for specific collection backup
+                    collection_name = db_config.get("collection_name")
+                    if collection_name:
+                        dump_command.append(f"--collection={collection_name}")
+                        print(f"Targeting specific collection: {collection_name}")
                 use_stdout = False
             else:
                 return {"status": "failed", "error": f"Unsupported database type: {db_type}"}
@@ -163,83 +201,143 @@ class BackupService:
                     masked_cmd.append(arg)
             print(f"Executing Command: {' '.join(masked_cmd)}")
 
-            # Execute command
+            # Execute command asynchronously to avoid blocking the event loop
             try:
-                if use_stdout:
-                    with open(filepath, 'w') as f:
-                        process = subprocess.run(dump_command, env=env, stdout=f, stderr=subprocess.PIPE, text=True, check=True)
-                        if process.stderr:
-                            print(f"Backup Tool Output (stderr): {process.stderr}")
-                else:
-                    process = subprocess.run(dump_command, env=env, capture_output=True, text=True, check=True)
-                    print(f"Backup Tool Output (stdout): {process.stdout}")
-                    if process.stderr:
-                        print(f"Backup Tool Output (stderr): {process.stderr}")
-            except subprocess.CalledProcessError as e:
-                print(f"Backup Tool Failed. Error Output: {e.stderr}")
+                loop = asyncio.get_event_loop()
+                async def run_backup_process(cmd):
+                    if use_stdout:
+                        def run_dump_to_file():
+                            with open(filepath, 'w') as f:
+                                return subprocess.run(cmd, env=env, stdout=f, stderr=subprocess.PIPE, text=True, check=True)
+                        return await loop.run_in_executor(None, run_dump_to_file)
+                    else:
+                        return await loop.run_in_executor(
+                            None, 
+                            lambda: subprocess.run(cmd, env=env, capture_output=True, text=True, check=True)
+                        )
+
+                try:
+                    process_result = await run_backup_process(dump_command)
+                except subprocess.CalledProcessError as e:
+                    # SMART RETRY: If TLS failed, try one more time without TLS
+                    if db_type == "mongodb" and ("EOF" in str(e.stderr) or "timeout" in str(e.stderr)) and "tls=true" in uri:
+                        print("TLS connection failed (EOF). Retrying without TLS...")
+                        # Strip TLS options from URI
+                        new_uri = uri.replace("&tls=true", "").replace("tls=true&", "").replace("?tls=true", "?")
+                        new_uri = new_uri.replace("&tlsInsecure=true", "").replace("tlsInsecure=true&", "").replace("?tlsInsecure=true", "?")
+                        
+                        retry_command = [arg for arg in dump_command if arg != "--tlsInsecure"]
+                        for i, arg in enumerate(retry_command):
+                            if arg.startswith("--uri="):
+                                retry_command[i] = f"--uri={new_uri}"
+                        
+                        process_result = await run_backup_process(retry_command)
+                    else:
+                        raise e
+
+                if process_result.stderr:
+                    print(f"Backup Tool Output (stderr): {process_result.stderr}")
+                    
+            except (subprocess.CalledProcessError, Exception) as e:
+                error_msg = getattr(e, 'stderr', str(e))
+                print(f"Backup Failed: {error_msg}")
+                
+                # Save failure to database so it shows in UI history
+                await self.backups_collection.insert_one({
+                    "user_id": user_id,
+                    "company_id": company_id,
+                    "db_id": db_id,
+                    "db_type": db_type,
+                    "filename": filename,
+                    "status": "failed",
+                    "error": error_msg,
+                    "size": 0,
+                    "created_at": datetime.now(timezone.utc)
+                })
+                
                 return {
                     "status": "failed", 
-                    "error": f"Backup tool failed: {e.stderr or str(e)}"
-                }
-            except FileNotFoundError:
-                return {
-                    "status": "failed", 
-                    "error": f"Backup tool '{tool_name}' not found. Please ensure it is installed and in your system PATH."
+                    "error": f"Backup failed: {error_msg}"
                 }
             
             # Get file size
             file_size = os.path.getsize(filepath)
             
-            # S3 Upload logic
-            s3_key = f"dumpty/backups/{company_id}/{db_id}/{filename}"
-            s3_url = aws_service.upload_file(filepath, s3_key)
+            # Basic validation: flag backups that are suspiciously small
+            is_empty_backup = False
+            if db_type == "mongodb" and file_size < 200: # Empty mongodump --archive --gzip is ~116 bytes
+                is_empty_backup = True
+                print(f"WARNING: Backup file for {target_db} is very small ({file_size} bytes). It might be empty.")
+            elif file_size < 100:
+                is_empty_backup = True
+                print(f"WARNING: Backup file for {target_db} is very small ({file_size} bytes).")
             
-            # Save backup metadata to database
-            backup_doc = {
-                "user_id": user_id,
-                "company_id": company_id,
-                "db_id": db_id,
-                "db_type": db_type,
-                "filename": filename,
-                "s3_key": s3_key,
-                "s3_url": s3_url,
-                "storage_type": "s3" if s3_url else "local",
-                "size": file_size,
-                "description": description,
-                "status": "completed" if s3_url else "completed_local_only",
-                "created_at": datetime.now(timezone.utc)
-            }
-            
-            result = await self.backups_collection.insert_one(backup_doc)
-            backup_id = str(result.inserted_id)
-            backup_doc["_id"] = backup_id
-            
-            # Log the action
-            await audit_service.log_action(
-                user_id=user_id,
-                company_id=company_id,
-                action="backup_created",
-                target_id=backup_id,
-                metadata={
-                    "filename": filename,
+            # S3 Upload and metadata logic
+            try:
+                # S3 Upload logic - Run in executor to avoid blocking the event loop
+                s3_key = f"dumpty/backups/{company_id}/{db_id}/{filename}"
+                s3_url = await loop.run_in_executor(None, lambda: aws_service.upload_file(filepath, s3_key))
+                
+                # Save backup metadata to database
+                backup_doc = {
+                    "user_id": user_id,
+                    "company_id": company_id,
                     "db_id": db_id,
+                    "db_type": db_type,
+                    "filename": filename,
+                    "s3_key": s3_key,
+                    "s3_url": s3_url,
+                    "storage_type": "s3" if s3_url else "local",
                     "size": file_size,
-                    "storage_type": backup_doc["storage_type"]
+                    "description": description,
+                    "status": "completed" if not is_empty_backup else "warning_empty",
+                    "is_empty": is_empty_backup,
+                    "created_at": datetime.now(timezone.utc)
                 }
-            )
-            
-            # Cleanup local file if S3 upload was successful
-            if s3_url and os.path.exists(filepath):
-                try:
-                    os.remove(filepath)
-                    backup_doc["local_cleaned"] = True
-                except Exception as e:
-                    logger.error(f"Failed to cleanup local backup file: {e}")
-            
-            # Enforce retention policy (keep last 7)
-            await self._enforce_retention(company_id, db_id, limit=7)
+                
+                if s3_url:
+                    backup_doc["status"] = "completed" if not is_empty_backup else "warning_empty"
+                else:
+                    backup_doc["status"] = "completed_local_only"
+                
+                result = await self.backups_collection.insert_one(backup_doc)
+                backup_id = str(result.inserted_id)
+                backup_doc["_id"] = backup_id
+                
+                # Log the action
+                await audit_service.log_action(
+                    user_id=user_id,
+                    company_id=company_id,
+                    action="backup_created",
+                    target_id=backup_id,
+                    metadata={
+                        "filename": filename,
+                        "db_id": db_id,
+                        "size": file_size,
+                        "storage_type": backup_doc["storage_type"]
+                    }
+                )
+                
+                # Cleanup local file if S3 upload was successful
+                if s3_url and os.path.exists(filepath):
+                    try:
+                        os.remove(filepath)
+                        backup_doc["local_cleaned"] = True
+                    except Exception as e:
+                        print(f"Failed to cleanup local backup file: {e}")
+                
+                # Enforce retention policy (keep last 7)
+                await self._enforce_retention(company_id, db_id, limit=7)
 
-            return backup_doc
+                return backup_doc
+            except Exception as e:
+                print(f"Post-backup processing failed: {str(e)}")
+                # Even if S3/Audit fails, we have the file locally if use_stdout or pg_dump worked
+                return {
+                    "status": "failed",
+                    "error": f"Backup completed but processing failed: {str(e)}",
+                    "filename": filename
+                }
             
         except subprocess.CalledProcessError as e:
             # Handle backup execution failure

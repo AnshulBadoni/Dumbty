@@ -33,12 +33,19 @@ class DBService:
             # Take last 30 for history
             for b in db_backups[:30]:
                 status = b.get("status", "failed")
-                config["status_history"].append("success" if status in ["completed", "success", "completed_local_only"] else "failed")
+                if status in ["completed", "success"]:
+                    config["status_history"].append("success")
+                elif status in ["warning_empty", "completed_local_only"]:
+                    config["status_history"].append("warning")
+                else:
+                    config["status_history"].append("failed")
+                
                 config["total_storage"] += b.get("size", 0)
                 config["total_backups"] += 1
             
-            # Reverse to show chronological order in UI (oldest to newest)
+            # The UI expects history to be chronological (oldest to newest)
             config["status_history"].reverse()
+            print(f"DEBUG: DB {config['db_name']} has {len(config['status_history'])} history points")
         
         return {
             "databases": configs, 
@@ -72,7 +79,12 @@ class DBService:
         # Last 30 for history
         for b in backups[:30]:
             status = b.get("status", "failed")
-            status_history.append("success" if status in ["completed", "success", "completed_local_only"] else "failed")
+            if status in ["completed", "success"]:
+                status_history.append("success")
+            elif status in ["warning_empty", "completed_local_only"]:
+                status_history.append("warning")
+            else:
+                status_history.append("failed")
         
         status_history.reverse()
 
@@ -95,6 +107,7 @@ class DBService:
     async def update_db_config(self, user_id: str, company_id: str, db_id: str, config: dict):
         """Update a database config"""
         from bson import ObjectId
+        print(f"DIAGNOSTIC: Received update for DB {db_id}: {config}")
         # Remove _id if present in config to avoid trying to update immutable field
         config.pop("_id", None)
         config.pop("id", None)
