@@ -21,12 +21,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import asyncio
 from scheduler import backup_scheduler
-from dotenv import load_dotenv
 import signal
-
-load_dotenv()
 
 # Global flag for graceful shutdown
 shutdown_event = asyncio.Event()

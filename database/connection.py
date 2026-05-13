@@ -1,8 +1,11 @@
 from pymongo import AsyncMongoClient
 from os import getenv
+import logging
+
+logger = logging.getLogger(__name__)
 
 MONGO_URI = getenv("MONGO_URI", "mongodb://localhost:27017")
-print(f"Connecting to MongoDB at: {MONGO_URI}")
+logger.info(f"Connecting to MongoDB at: {MONGO_URI.split('@')[-1]}") # Mask credentials if present
 
 client = AsyncMongoClient(MONGO_URI)
 
