@@ -5,6 +5,7 @@ from services.backup_service import backup_service
 from database.connection import get_collection
 import asyncio
 import logging
+from bson import ObjectId
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,14 @@ class BackupScheduler:
                     )
             except:
                 pass # Don't let notification failure crash the scheduler
+        finally:
+            # Update next run time in DB
+            job = self.scheduler.get_job(f"backup_{db_id}")
+            if job and job.next_run_time:
+                await self.db_configs_collection.update_one(
+                    {"_id": ObjectId(db_id)},
+                    {"$set": {"next_run_at": job.next_run_time}}
+                )
     
     async def initialize_schedules(self):
         configs = await self.db_configs_collection.find({}).to_list(1000)
@@ -124,6 +133,13 @@ class BackupScheduler:
             next_run_time=next_run,
             misfire_grace_time=3600
         )
+        
+        # Update next run time in DB immediately
+        await self.db_configs_collection.update_one(
+            {"_id": ObjectId(db_id)},
+            {"$set": {"next_run_at": next_run}}
+        )
+        
         logger.info(f"Scheduled {db_id} every {interval} {interval_unit} -> next at {next_run.strftime('%H:%M:%S')}")
     
     def remove_backup_job(self, db_id: str):

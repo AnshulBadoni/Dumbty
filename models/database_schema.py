@@ -20,3 +20,4 @@ class DatabaseConfig(BaseModel):
     connection_string: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    next_run_at: Optional[datetime] = None
